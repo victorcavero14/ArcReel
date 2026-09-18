@@ -173,6 +173,17 @@ interface ExtrasProps {
   onPatch: (patch: Partial<ComfyuiBindingTarget>) => void;
 }
 
+/**
+ * 步长与帧率这类「至少 1」的数值：读不出有限数或小于 1 时给 `undefined`，即这一项不声明。
+ *
+ * `min={1}` 只拦得住原生控件的上下箭头，手打的负数、`Infinity` 与空串照样进得来；定义保存时
+ * 不再走一次表单校验，故在写进状态这一步就挡掉。
+ */
+function atLeastOne(raw: string): number | undefined {
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 1 ? value : undefined;
+}
+
 /** 条目自带的附加项：对齐步长、手填帧率、种子策略、帧率的只读说明。 */
 function BindingExtras({ bindingKey, targets, onPatch }: ExtrasProps) {
   const { t } = useTranslation("dashboard");
@@ -193,7 +204,7 @@ function BindingExtras({ bindingKey, targets, onPatch }: ExtrasProps) {
             inputMode="numeric"
             autoComplete="off"
             value={target.step ?? ""}
-            onChange={(event) => onPatch({ step: Number(event.target.value) || undefined })}
+            onChange={(event) => onPatch({ step: atLeastOne(event.target.value) })}
             className={`${INPUT_CLS} w-16 py-0.5 text-[12px]`}
           />
         </label>
@@ -209,7 +220,7 @@ function BindingExtras({ bindingKey, targets, onPatch }: ExtrasProps) {
                 inputMode="decimal"
                 autoComplete="off"
                 value={target.fps ?? ""}
-                onChange={(event) => onPatch({ fps: Number(event.target.value) || undefined })}
+                onChange={(event) => onPatch({ fps: atLeastOne(event.target.value) })}
                 className={`${INPUT_CLS} w-20 py-0.5 text-[12px]`}
               />
             </label>

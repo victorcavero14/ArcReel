@@ -766,6 +766,110 @@ class TestVideoCapabilities:
         assert caps["first_frame"] is True
         assert caps["text_to_video"] is False
 
+    async def test_a_stale_tier_on_the_row_is_dropped_when_the_endpoint_lost_its_frames_binding(self, db_factory):
+        """端点定义可以在模型行保存之后被改：真相源是端点，不是行里存着的那份旧档位。
+
+        写入侧只在保存那一刻把 comfyui 行的档位钉成空集。一份原本绑了 ``frames`` 的 workflow
+        解绑之后，旧行里的 ``[5]`` 还在——沿用它会让能力接口与剧本规划继续宣称 5 秒，而端点目录
+        已经把时长控件禁掉，同一个问题两处答案不一样。
+        """
+        from lib.db.models.custom_endpoint import CustomEndpoint
+        from lib.db.models.custom_provider import CustomProvider, CustomProviderModel
+        from tests.factories import comfyui_endpoint_definition
+
+        resolver = ConfigResolver.__new__(ConfigResolver)
+        fake_svc = _FakeConfigService(settings={})
+        async with db_factory() as session:
+            definition = comfyui_endpoint_definition()
+            definition["bindings"]["start_image"] = [{"node": "11", "input": "image", "class_type": "LoadImage"}]
+            assert "frames" not in definition["bindings"]
+            endpoint = CustomEndpoint(
+                definition=definition,
+                kind="comfyui",
+                schema_version="1.0.0",
+                media_type="video",
+                display_name="示例 ComfyUI 端点",
+            )
+            session.add(endpoint)
+            provider = CustomProvider(
+                display_name="Comfy", discovery_format="comfyui", base_url="http://comfy.test:8188", api_key=""
+            )
+            session.add(provider)
+            await session.flush()
+            session.add(
+                CustomProviderModel(
+                    provider_id=provider.id,
+                    model_id="my-wan-workflow",
+                    display_name="My Workflow",
+                    endpoint=f"ce-{endpoint.id}",
+                    # 解绑 frames 之前保存下来的那一份。
+                    supported_durations="[5]",
+                )
+            )
+            await session.flush()
+
+            with patch("lib.config.resolver.get_project_manager") as mock_pm:
+                mock_pm.return_value.load_project.return_value = {
+                    "video_backend": f"custom-{provider.id}/my-wan-workflow",
+                }
+                caps = await resolver._resolve_video_capabilities(fake_svc, session, "demo")
+
+        assert caps["supported_durations"] == []
+        assert caps["max_duration"] == 0
+        assert caps["duration_endpoint_fixed"] is True
+
+    async def test_an_empty_tier_on_the_row_gives_way_once_the_endpoint_can_drive_duration(self, db_factory):
+        """反方向的同一件事：行保存时端点驱动不了时长，之后 workflow 补上了 ``frames`` 与帧率。
+
+        沿用行上那份空集会让时长控件一直禁着、剧本规划一直借固定篇幅，而请求构造已经在往图里
+        写帧数了。
+        """
+        from lib.db.models.custom_endpoint import CustomEndpoint
+        from lib.db.models.custom_provider import CustomProvider, CustomProviderModel
+        from tests.factories import comfyui_endpoint_definition
+
+        resolver = ConfigResolver.__new__(ConfigResolver)
+        fake_svc = _FakeConfigService(settings={})
+        async with db_factory() as session:
+            definition = comfyui_endpoint_definition()
+            definition["workflow"]["5"]["inputs"]["length"] = 81
+            definition["bindings"]["frames"] = [{"node": "5", "input": "length", "class_type": "EmptyLatentImage"}]
+            definition["bindings"]["start_image"] = [{"node": "11", "input": "image", "class_type": "LoadImage"}]
+            endpoint = CustomEndpoint(
+                definition=definition,
+                kind="comfyui",
+                schema_version="1.0.0",
+                media_type="video",
+                display_name="示例 ComfyUI 端点",
+            )
+            session.add(endpoint)
+            provider = CustomProvider(
+                display_name="Comfy", discovery_format="comfyui", base_url="http://comfy.test:8188", api_key=""
+            )
+            session.add(provider)
+            await session.flush()
+            session.add(
+                CustomProviderModel(
+                    provider_id=provider.id,
+                    model_id="my-wan-workflow",
+                    display_name="My Workflow",
+                    endpoint=f"ce-{endpoint.id}",
+                    # 补上 frames 之前保存下来的那一份。
+                    supported_durations="[]",
+                )
+            )
+            await session.flush()
+
+            with patch("lib.config.resolver.get_project_manager") as mock_pm:
+                mock_pm.return_value.load_project.return_value = {
+                    "video_backend": f"custom-{provider.id}/my-wan-workflow",
+                }
+                caps = await resolver._resolve_video_capabilities(fake_svc, session, "demo")
+
+        assert caps["supported_durations"] == [5]
+        assert caps["max_duration"] == 5
+        assert caps["duration_endpoint_fixed"] is False
+
     async def test_a_non_comfyui_row_with_an_empty_tier_still_fails_loud(self, db_factory):
         """ADR 0018 对其余协议不变：档位声明缺失仍要把用户引到配置页去修。"""
         from lib.db.models.custom_provider import CustomProvider, CustomProviderModel

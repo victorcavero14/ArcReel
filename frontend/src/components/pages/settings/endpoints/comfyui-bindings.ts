@@ -97,18 +97,28 @@ export function classTypeCounts(nodes: ComfyuiNodeEntry[]): { classType: string;
 
 /**
  * 一个输入是不是连线。ComfyUI 的连线形如 `[上游节点 id, 输出序号]`；`{"__value__": [...]}`
- * 是生态里给数组字面值加的包装，解包后才是真值，因此绑得上去。
+ * 是生态里给数组字面值加的包装，作者刻意声明的字面数组，因此绑得上去。
+ *
+ * 先看包装再判形状，与服务端的 `workflow.is_link` 同序：反过来先解包会把
+ * `{"__value__": ["4", 0]}` 判成连线，于是一个真能填值的输入在手选下拉里不见了。
  */
 export function isLinkInput(value: unknown): boolean {
-  const unwrapped = unwrapValue(value);
-  return Array.isArray(unwrapped) && unwrapped.length === 2 && typeof unwrapped[1] === "number";
+  if (isWrappedValue(value)) return false;
+  return Array.isArray(value) && value.length === 2 && typeof value[1] === "number";
+}
+
+function isWrappedValue(value: unknown): value is { __value__: unknown } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.keys(value).length === 1 &&
+    "__value__" in value
+  );
 }
 
 function unwrapValue(value: unknown): unknown {
-  if (typeof value === "object" && value !== null && "__value__" in value) {
-    return (value).__value__;
-  }
-  return value;
+  return isWrappedValue(value) ? value.__value__ : value;
 }
 
 /** 该输入当前的字面值，供手选下拉展示；连线与缺席都得不到值。 */
@@ -339,4 +349,25 @@ export function saveBlockers(
     }
   }
   return blockers;
+}
+
+/**
+ * 一份定义用于「改过没有」比对的规范形。
+ *
+ * 直接串比会把两份内容相同的定义判成不同：空标题在手选那一侧是「不写 `title` 这个键」
+ * （见 `withTitle`），服务端重匹配回来的却是 `"title": ""`；键的次序也各按各的来源。
+ * 递归按键名排序、并把空 `title` 一律当作缺省，两侧才在同一把尺子上。这只影响按钮文案与
+ * 可点性，落盘的仍是原样的 `draft`。
+ */
+export function definitionFingerprint(definition: object): string {
+  return JSON.stringify(canonical(definition));
+}
+
+function canonical(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value === null || typeof value !== "object") return value;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([key, raw]) => !(key === "title" && raw === ""))
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return Object.fromEntries(entries.map(([key, raw]) => [key, canonical(raw)]));
 }
